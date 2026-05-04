@@ -1,3 +1,5 @@
-altair
+streamlit==1.57.0
+numpy
 pandas
-streamlit
+matplotlib
+python-bidi
