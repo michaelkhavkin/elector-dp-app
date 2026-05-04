@@ -855,9 +855,9 @@ def page_dashboard(eps_vote, eps_party, eps_count):
     st.markdown("#### נוכחות ומצביעים ממתינים לפי עיר")
     col_a, col_b = st.columns(2)
     with col_a:
-        st.pyplot(plot_city_bars(city_df), use_container_width=True)
+        st.pyplot(plot_city_bars(city_df), use_container_width=False)
     with col_b:
-        st.pyplot(plot_missing_voters(city_df), use_container_width=True)
+        st.pyplot(plot_missing_voters(city_df), use_container_width=False)
 
     st.divider()
 
