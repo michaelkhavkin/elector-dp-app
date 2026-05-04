@@ -518,19 +518,19 @@ def accuracy_progress_bar(value, label):
 # =============================================================================
 
 def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
-    k      = len(PARTY_NAMES)
-    p_rr   = np.exp(eps_vote) / (1.0 + np.exp(eps_vote))
-    flip   = 1.0 - p_rr
+    k         = len(PARTY_NAMES)
+    p_rr      = np.exp(eps_vote) / (1.0 + np.exp(eps_vote))
+    flip      = 1.0 - p_rr
+    p_krr     = np.exp(eps_party) / (np.exp(eps_party) + k - 1)
+    noise_krr = 1.0 - p_krr
+    lap_scale = 1.0 / eps_count
+
     if n_reported > 0 and (2 * p_rr - 1) > 0:
         q_approx  = 0.7 * p_rr + 0.3 * (1.0 - p_rr)
         std_count = (np.sqrt(q_approx * (1.0 - q_approx) / n_reported)
                      / (2.0 * p_rr - 1.0)) * n_reported
     else:
         std_count = float("nan")
-
-    p_krr     = np.exp(eps_party) / (np.exp(eps_party) + k - 1)
-    noise_krr = 1.0 - p_krr
-    lap_scale = 1.0 / eps_count
 
     if min(float(eps_vote), float(eps_count)) >= 2.0:
         level_icon, level_txt = "🟢", "דיוק גבוה"
@@ -539,18 +539,31 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
     else:
         level_icon, level_txt = "🔴", "דיוק נמוך — פרטיות גבוהה"
 
-    with st.expander(
-        f"{level_icon} הערכת דיוק הנתונים — {level_txt}",
-        expanded=False,
-        key="accuracy_banner",
+    # ── Toggle state — persists across reruns, triggers exactly one rerun ──
+    if "accuracy_open" not in st.session_state:
+        st.session_state.accuracy_open = False
+
+    arrow = "▼" if st.session_state.accuracy_open else "▶"
+    if st.button(
+        f"{level_icon}  {arrow}  הערכת דיוק הנתונים — {level_txt}",
+        key="accuracy_toggle",
+        use_container_width=True,
     ):
+        st.session_state.accuracy_open = not st.session_state.accuracy_open
+        st.rerun()
+
+    if not st.session_state.accuracy_open:
+        return
+
+    # ── Content — only rendered when open ──────────────────────────────────
+    with st.container(border=True):
         st.markdown(
-            f"הנתונים המוצגים מוגנים בעזרת מנגנון משמר פרטיות דיפרנציאלית.  "
+            f"הנתונים מוגנים בעזרת מנגנון פרטיות דיפרנציאלית.  "
             f"**תקציבי פרטיות:** ε(הצבעה) = **{eps_vote}**, "
             f"ε(ספירות עיר) = **{eps_count}**."
         )
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
 
         with col1:
             st.markdown("**הצבעה — Binary RR**")
@@ -562,16 +575,16 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
             )
             _static_bar(p_rr, f"אמינות: {p_rr:.0%}")
 
-        # with col2:
-        #     st.markdown("**מפלגה — k-RR**")
-        #     st.markdown(
-        #         f"- ε = **{eps_party}**\n"
-        #         f"- {noise_krr:.0%} מהתשובות הן אקראיות\n"
-        #         f"- {p_krr:.0%} מהתשובות הן אמיתיות"
-        #     )
-        #     _static_bar(p_krr, f"אמינות: {p_krr:.0%}")
-
         with col2:
+            st.markdown("**מפלגה — k-RR**")
+            st.markdown(
+                f"- ε = **{eps_party}**\n"
+                f"- {noise_krr:.0%} מהתשובות הן אקראיות\n"
+                f"- {p_krr:.0%} מהתשובות הן אמיתיות"
+            )
+            _static_bar(p_krr, f"אמינות: {p_krr:.0%}")
+
+        with col3:
             st.markdown("**ספירות עיר — Laplace**")
             st.markdown(
                 f"- ε = **{eps_count}**\n"
