@@ -515,24 +515,8 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
     else:
         level_icon, level_txt = "🔴", "דיוק נמוך — פרטיות גבוהה"
 
-    # ── Toggle state — persists across reruns, triggers exactly one rerun ──
-    if "accuracy_open" not in st.session_state:
-        st.session_state.accuracy_open = False
-
-    arrow = "▼" if st.session_state.accuracy_open else "▶"
-    if st.button(
-        f"{level_icon}  {arrow}  הערכת דיוק הנתונים — {level_txt}",
-        key="accuracy_toggle",
-        use_container_width=True,
-    ):
-        st.session_state.accuracy_open = not st.session_state.accuracy_open
-        st.rerun()
-
-    if not st.session_state.accuracy_open:
-        return
-
-    # ── Content — only rendered when open ──────────────────────────────────
-    with st.container(border=True):
+    # ── Content — Native Expander implementation ──────────────────────────
+    with st.expander(f"{level_icon}  הערכת דיוק הנתונים — {level_txt}", expanded=False):
         st.markdown(
             f"הנתונים מוגנים בעזרת מנגנון פרטיות דיפרנציאלית.  "
             f"**תקציבי פרטיות:** ε(הצבעה) = **{eps_vote}**, "
@@ -550,15 +534,6 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
                    if not np.isnan(std_count) else "")
             )
             _static_bar(p_rr, f"אמינות: {p_rr:.0%}")
-
-        # with col2:
-        #     st.markdown("**מפלגה — k-RR**")
-        #     st.markdown(
-        #         f"- ε = **{eps_party}**\n"
-        #         f"- {noise_krr:.0%} מהתשובות הן אקראיות\n"
-        #         f"- {p_krr:.0%} מהתשובות הן אמיתיות"
-        #     )
-        #     _static_bar(p_krr, f"אמינות: {p_krr:.0%}")
 
         with col2:
             st.markdown("**ספירות עיר — Laplace**")
@@ -611,8 +586,6 @@ def render_sidebar():
             st.markdown("#### 🔒 הגדרות פרטיות")
             eps_vote  = st.slider("ε — סטטוס הצבעה (Binary RR)",
                                    0.1, 5.0, DEFAULT_EPS_VOTE,  step=0.1)
-            # eps_party = st.slider("ε — בחירת מפלגה (k-RR)",
-            #                        0.1, 5.0, DEFAULT_EPS_PARTY, step=0.1)
             eps_count = st.slider("ε — ספירות עיר (Laplace)",
                                    0.1, 5.0, DEFAULT_EPS_COUNT, step=0.1)
             flip_pct = 1.0 / (1.0 + np.exp(eps_vote))
@@ -885,50 +858,6 @@ def page_dashboard(eps_vote, eps_party, eps_count):
         st.pyplot(plot_city_bars(city_df), use_container_width=True)
     with col_b:
         st.pyplot(plot_missing_voters(city_df), use_container_width=True)
-
-    # # ── Row 2: party estimates | city detail table ──────────────────────
-    # st.divider()
-    # st.markdown("#### הערכות מפלגה ופירוט עיר")
-    # col_c, col_d = st.columns([5, 4])
-    # with col_c:
-    #     st.pyplot(plot_party_estimates(party_counts), use_container_width=True)
-    #
-    #     org_count = party_counts[ORGANISER]
-    #     total_est = sum(party_counts.values())
-    #     st.markdown(
-    #         f"הערכת מפלגת {ORGANISER}: "
-    #         f"**{org_count:,} מצביעים** "
-    #         f"(~{org_count/max(total_est,1):.0%} מהמדווחים)"
-    #     )
-    #     p_true = np.exp(eps_party) / (np.exp(eps_party) + len(PARTY_NAMES) - 1)
-    #     p_noise = 1.0 - p_true
-    #     st.caption(
-    #         f"k-RR (ε={eps_party}): כל דוח הוא המפלגה האמיתית "
-    #         f"בהסתברות {p_true:.0%}, אקראי בהסתברות {p_noise:.0%}."
-    #     )
-    #
-    # with col_d:
-    #     st.markdown("**פירוט לפי עיר**")
-    #     display_df = city_df[[
-    #         "עיר", "מגויסים", "דוחות שהתקבלו",
-    #         "הצביעו (DP)", "עדיין ממתינים"
-    #     ]].copy()
-    #     st.dataframe(
-    #         display_df, use_container_width=True, hide_index=True,
-    #         column_config={
-    #             "הצביעו (DP)": st.column_config.NumberColumn(
-    #                 "הצביעו (DP)", help="ספירה עם רעש Laplace", format="%d"),
-    #             "עדיין ממתינים": st.column_config.NumberColumn(
-    #                 "עדיין ממתינים", help="מצביעים ללא דוח עדיין", format="%d"),
-    #         },
-    #     )
-    #     # City-level totals
-    #     st.markdown(
-    #         f"**סה\"כ:** {city_df['מגויסים'].sum():,} מגויסים &nbsp;|&nbsp; "
-    #         f"{city_df['הצביעו (DP)'].sum():,} הצביעו (DP) &nbsp;|&nbsp; "
-    #         f"{city_df['עדיין ממתינים'].sum():,} ממתינים",
-    #         unsafe_allow_html=True,
-    #     )
 
     st.divider()
 
