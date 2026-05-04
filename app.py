@@ -473,6 +473,21 @@ def render_top_bar(activist_name):
         unsafe_allow_html=True,
     )
 
+def _static_bar(value, label):
+    """Pure HTML progress bar — one-way render, cannot trigger reruns."""
+    pct   = int(round(min(value, 1.0) * 100))
+    color = "#27ae60" if pct >= 70 else "#e67e22" if pct >= 40 else "#e74c3c"
+    st.markdown(
+        f'<div style="margin:6px 0 12px 0;">'
+        f'<div style="display:flex;justify-content:space-between;'
+        f'font-size:12px;margin-bottom:3px;">'
+        f'<span>{label}</span><span>{pct}%</span></div>'
+        f'<div style="background:#e0e4ec;border-radius:6px;height:8px;">'
+        f'<div style="background:{color};width:{pct}%;height:8px;'
+        f'border-radius:6px;"></div></div></div>',
+        unsafe_allow_html=True,
+    )
+
 def accuracy_progress_bar(value, label):
     """
     Static HTML progress bar — no bidirectional server communication,
@@ -503,37 +518,20 @@ def accuracy_progress_bar(value, label):
 # =============================================================================
 
 def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
-    """
-    Show a user-friendly accuracy summary for the current epsilon values.
-
-    For each mechanism we compute:
-    - Binary RR (voted status): flip probability and estimated vote-count error
-    - k-RR (party choice):      randomisation probability
-    - Laplace (city counts):    expected absolute error per city
-
-    Displayed as a collapsible expander so it does not take permanent space.
-    """
-    k = len(PARTY_NAMES)
-
-    # Binary RR stats
+    k      = len(PARTY_NAMES)
     p_rr   = np.exp(eps_vote) / (1.0 + np.exp(eps_vote))
     flip   = 1.0 - p_rr
     if n_reported > 0 and (2 * p_rr - 1) > 0:
-        # Std of de-biased estimator (true rate ≈ 0.7, conservative)
-        q_approx = 0.7 * p_rr + 0.3 * (1.0 - p_rr)
+        q_approx  = 0.7 * p_rr + 0.3 * (1.0 - p_rr)
         std_count = (np.sqrt(q_approx * (1.0 - q_approx) / n_reported)
                      / (2.0 * p_rr - 1.0)) * n_reported
     else:
         std_count = float("nan")
 
-    # k-RR stats
-    p_krr      = np.exp(eps_party) / (np.exp(eps_party) + k - 1)
-    noise_krr  = 1.0 - p_krr
+    p_krr     = np.exp(eps_party) / (np.exp(eps_party) + k - 1)
+    noise_krr = 1.0 - p_krr
+    lap_scale = 1.0 / eps_count
 
-    # Laplace stats
-    lap_scale  = 1.0 / eps_count
-
-    # Overall level
     if min(float(eps_vote), float(eps_count)) >= 2.0:
         level_icon, level_txt = "🟢", "דיוק גבוה"
     elif min(eps_vote, float(eps_count)) >= 1.0:
@@ -541,30 +539,28 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
     else:
         level_icon, level_txt = "🔴", "דיוק נמוך — פרטיות גבוהה"
 
-    with st.expander(f"{level_icon} הערכת דיוק הנתונים — {level_txt}", expanded=False, key="accuracy_banner"):
+    with st.expander(
+        f"{level_icon} הערכת דיוק הנתונים — {level_txt}",
+        expanded=False,
+        key="accuracy_banner",
+    ):
         st.markdown(
-            f"הנתונים המוצגים מוגנים בעזרת מגנגון משמר פרטיות דיפרנציאלית.\n"
-            f" **תקציבי פרטיות:** "
-            f"ε(הצבעה) = **{eps_vote}**, "
-            # f"ε(מפלגה) = **{eps_party}**, "
+            f"הנתונים המוצגים מוגנים בעזרת מנגנון משמר פרטיות דיפרנציאלית.  "
+            f"**תקציבי פרטיות:** ε(הצבעה) = **{eps_vote}**, "
             f"ε(ספירות עיר) = **{eps_count}**."
         )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         with col1:
             st.markdown("**הצבעה — Binary RR**")
             st.markdown(
                 f"- ε = **{eps_vote}**\n"
                 f"- {flip:.0%} מהדיווחים עשויים להיות הפוכים\n"
-                f"- שגיאה טיפוסית בספירה: "
-                f"**±{std_count:.0f} מצביעים**"
-                if not np.isnan(std_count) else
-                f"- ε = **{eps_vote}**\n"
-                f"- {flip:.0%} מהדיווחים עשויים להיות הפוכים"
+                + (f"- שגיאה טיפוסית: **±{std_count:.0f} מצביעים**"
+                   if not np.isnan(std_count) else "")
             )
-            accuracy_progress_bar(min(p_rr, 1.0), f"אמינות: {p_rr:.0%}")
-
+            _static_bar(p_rr, f"אמינות: {p_rr:.0%}")
 
         # with col2:
         #     st.markdown("**מפלגה — k-RR**")
@@ -573,21 +569,19 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
         #         f"- {noise_krr:.0%} מהתשובות הן אקראיות\n"
         #         f"- {p_krr:.0%} מהתשובות הן אמיתיות"
         #     )
-        #     accuracy_progress_bar(min(p_krr, 1.0), f"אמינות: {p_krr:.0%}")
+        #     _static_bar(p_krr, f"אמינות: {p_krr:.0%}")
 
-
-        with col3:
+        with col2:
             st.markdown("**ספירות עיר — Laplace**")
             st.markdown(
                 f"- ε = **{eps_count}**\n"
                 f"- רעש ממוצע: **±{lap_scale:.1f} קולות** לכל עיר\n"
             )
-            accuracy_progress_bar(min(1.0 / (1.0 + lap_scale), 1.0), f"דיוק: {1/(1+lap_scale):.0%}")
+            _static_bar(1.0 / (1.0 + lap_scale), f"דיוק: {1/(1+lap_scale):.0%}")
 
         st.caption(
             "💡 ε גבוה יותר = דיוק גבוה יותר, פרטיות נמוכה יותר.  "
-            "ε נמוך יותר = פרטיות גבוהה יותר, שגיאה גדולה יותר.  "
-            "הגדל את ε בהגדרות הפרטיות כדי לשפר את הדיוק."
+            "ε נמוך יותר = פרטיות גבוהה יותר, שגיאה גדולה יותר."
         )
 
 
