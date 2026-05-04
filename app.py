@@ -517,7 +517,7 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
     else:
         level_icon, level_txt = "🔴", "דיוק נמוך — פרטיות גבוהה"
 
-    with st.expander(f"{level_icon} הערכת דיוק הנתונים — {level_txt}", expanded=False):
+    with st.expander(f"{level_icon} הערכת דיוק הנתונים — {level_txt}", expanded=False, key="accuracy_banner"):
         st.markdown(
             f"הנתונים המוצגים מוגנים בעזרת מגנגון משמר פרטיות דיפרנציאלית.\n"
             f" **תקציבי פרטיות:** "
