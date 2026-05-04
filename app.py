@@ -368,7 +368,6 @@ def inject_styles():
     [data-testid="stMarkdownContainer"] ul,
     [data-testid="stMarkdownContainer"] ol {
         text-align: right !important;
-        direction: rtl !important;
     }
     
     .top-bar {
@@ -409,7 +408,6 @@ def inject_styles():
        left, which is the correct position for Hebrew/RTL expanders.     */
     [data-testid="stExpander"] details summary,
     [data-testid="stExpander"] details summary p {
-        direction: rtl !important;
         text-align: right !important;
     }
     /* Hide the Material Icons span (keyboard_arrow_right) and replace
@@ -441,8 +439,7 @@ def inject_styles():
     [data-testid="stExpander"] p,
     [data-testid="stExpander"] li {
         text-align: right !important;
-        direction: rtl !important;
-        width: 100%
+
     }
     /* ══════════════════════════════════════════════════════════════════ */
     </style>
