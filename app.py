@@ -473,6 +473,30 @@ def render_top_bar(activist_name):
         unsafe_allow_html=True,
     )
 
+def accuracy_progress_bar(value, label):
+    """
+    Static HTML progress bar — no bidirectional server communication,
+    so it cannot trigger Streamlit reruns the way st.progress can.
+    value: float between 0 and 1
+    """
+    pct    = int(round(value * 100))
+    color  = "#27ae60" if pct >= 70 else "#e67e22" if pct >= 40 else "#e74c3c"
+    st.markdown(
+        f"""
+        <div style="margin:6px 0 10px 0;">
+          <div style="display:flex;justify-content:space-between;
+                      font-size:12px;margin-bottom:3px;">
+            <span>{label}</span><span>{pct}%</span>
+          </div>
+          <div style="background:#e0e4ec;border-radius:6px;height:8px;width:100%;">
+            <div style="background:{color};width:{pct}%;height:8px;
+                        border-radius:6px;transition:width 0.3s;"></div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 # =============================================================================
 # DP ACCURACY BANNER
@@ -539,7 +563,8 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
                 f"- ε = **{eps_vote}**\n"
                 f"- {flip:.0%} מהדיווחים עשויים להיות הפוכים"
             )
-            st.progress(min(p_rr, 1.0), text=f"אמינות: {p_rr:.0%}")
+            accuracy_progress_bar(min(p_rr, 1.0), f"אמינות: {p_rr:.0%}")
+
 
         # with col2:
         #     st.markdown("**מפלגה — k-RR**")
@@ -548,7 +573,8 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
         #         f"- {noise_krr:.0%} מהתשובות הן אקראיות\n"
         #         f"- {p_krr:.0%} מהתשובות הן אמיתיות"
         #     )
-        #     st.progress(min(p_krr, 1.0), text=f"אמינות: {p_krr:.0%}")
+        #     accuracy_progress_bar(min(p_krr, 1.0), f"אמינות: {p_krr:.0%}")
+
 
         with col3:
             st.markdown("**ספירות עיר — Laplace**")
@@ -556,8 +582,7 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
                 f"- ε = **{eps_count}**\n"
                 f"- רעש ממוצע: **±{lap_scale:.1f} קולות** לכל עיר\n"
             )
-            st.progress(min(1.0 / (1.0 + lap_scale), 1.0),
-                        text=f"דיוק: {1/(1+lap_scale):.0%}")
+            accuracy_progress_bar(min(1.0 / (1.0 + lap_scale), 1.0), f"דיוק: {1/(1+lap_scale):.0%}")
 
         st.caption(
             "💡 ε גבוה יותר = דיוק גבוה יותר, פרטיות נמוכה יותר.  "
