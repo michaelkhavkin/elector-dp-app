@@ -488,30 +488,6 @@ def _static_bar(value, label):
         unsafe_allow_html=True,
     )
 
-def accuracy_progress_bar(value, label):
-    """
-    Static HTML progress bar — no bidirectional server communication,
-    so it cannot trigger Streamlit reruns the way st.progress can.
-    value: float between 0 and 1
-    """
-    pct    = int(round(value * 100))
-    color  = "#27ae60" if pct >= 70 else "#e67e22" if pct >= 40 else "#e74c3c"
-    st.markdown(
-        f"""
-        <div style="margin:6px 0 10px 0;">
-          <div style="display:flex;justify-content:space-between;
-                      font-size:12px;margin-bottom:3px;">
-            <span>{label}</span><span>{pct}%</span>
-          </div>
-          <div style="background:#e0e4ec;border-radius:6px;height:8px;width:100%;">
-            <div style="background:{color};width:{pct}%;height:8px;
-                        border-radius:6px;transition:width 0.3s;"></div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
 
 # =============================================================================
 # DP ACCURACY BANNER
@@ -539,10 +515,24 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
     else:
         level_icon, level_txt = "🔴", "דיוק נמוך — פרטיות גבוהה"
 
+    # ── Toggle state — persists across reruns, triggers exactly one rerun ──
+    if "accuracy_open" not in st.session_state:
+        st.session_state.accuracy_open = False
+
+    arrow = "▼" if st.session_state.accuracy_open else "▶"
+    if st.button(
+        f"{level_icon}  {arrow}  הערכת דיוק הנתונים — {level_txt}",
+        key="accuracy_toggle",
+        use_container_width=True,
+    ):
+        st.session_state.accuracy_open = not st.session_state.accuracy_open
+        st.rerun()
+
+    if not st.session_state.accuracy_open:
+        return
+
+    # ── Content — only rendered when open ──────────────────────────────────
     with st.container(border=True):
-        st.markdown(
-            f"#### {level_icon} הערכת דיוק הנתונים — {level_txt}"
-        )
         st.markdown(
             f"הנתונים מוגנים בעזרת מנגנון פרטיות דיפרנציאלית.  "
             f"**תקציבי פרטיות:** ε(הצבעה) = **{eps_vote}**, "
@@ -561,6 +551,15 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
             )
             _static_bar(p_rr, f"אמינות: {p_rr:.0%}")
 
+        # with col2:
+        #     st.markdown("**מפלגה — k-RR**")
+        #     st.markdown(
+        #         f"- ε = **{eps_party}**\n"
+        #         f"- {noise_krr:.0%} מהתשובות הן אקראיות\n"
+        #         f"- {p_krr:.0%} מהתשובות הן אמיתיות"
+        #     )
+        #     _static_bar(p_krr, f"אמינות: {p_krr:.0%}")
+
         with col2:
             st.markdown("**ספירות עיר — Laplace**")
             st.markdown(
@@ -573,7 +572,6 @@ def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
             "💡 ε גבוה יותר = דיוק גבוה יותר, פרטיות נמוכה יותר.  "
             "ε נמוך יותר = פרטיות גבוהה יותר, שגיאה גדולה יותר."
         )
-
 
 # =============================================================================
 # SIDEBAR
