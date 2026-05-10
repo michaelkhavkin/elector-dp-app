@@ -15,6 +15,10 @@ Generic layer:
   - gaussian_mechanism         : Gaussian   (ε,δ-DP, numerical aggregates)
   - estimate_krr_frequency     : Unbiased frequency estimator for k-RR outputs
   - estimate_rr_frequency      : Unbiased frequency estimator for binary RR outputs
+  - laplace_margin_of_error      : 95 % margin of error for a Laplace-noised count
+  - laplace_confidence_interval  : 95 % CI for a Laplace-noised count (noisy_value ± margin)
+  - gaussian_margin_of_error     : 95 % margin of error for a Gaussian-noised count
+  - gaussian_confidence_interval : 95 % CI for a Gaussian-noised count (noisy_value ± margin)
 
 Application layer:
   - protect_party_vote              : (1) Protect which party a voter chose
@@ -29,6 +33,10 @@ Usage example (Jupyter)
 """
 
 import numpy as np
+import opendp.prelude as dp
+from opendp.accuracy import laplacian_scale_to_accuracy, gaussian_scale_to_accuracy
+
+dp.enable_features("contrib")
 
 
 # =============================================================================
@@ -60,7 +68,8 @@ def randomized_response(true_value, epsilon):
         raise ValueError("epsilon must be positive.")
 
     p_true = np.exp(epsilon) / (1.0 + np.exp(epsilon))
-    return bool(true_value) if np.random.random() < p_true else not bool(true_value)
+    m = dp.m.make_randomized_response_bool(prob=p_true)
+    return m(bool(true_value))
 
 
 def k_randomized_response(true_value, candidates, epsilon):
@@ -96,12 +105,8 @@ def k_randomized_response(true_value, candidates, epsilon):
         raise ValueError("true_value must be one of the candidates.")
 
     p_true = np.exp(epsilon) / (np.exp(epsilon) + k - 1)
-
-    if np.random.random() < p_true:
-        return true_value
-
-    other = [c for c in candidates if c != true_value]
-    return np.random.choice(other)
+    m = dp.m.make_randomized_response(categories=candidates, prob=p_true)
+    return m(true_value)
 
 
 def laplace_mechanism(true_value, sensitivity, epsilon):
@@ -133,8 +138,10 @@ def laplace_mechanism(true_value, sensitivity, epsilon):
         raise ValueError("sensitivity must be positive.")
 
     scale = sensitivity / epsilon
-    noise = np.random.laplace(loc=0.0, scale=scale)
-    return float(true_value) + noise
+    # Use integer domain to avoid the NaN-exclusion requirement on float domains.
+    # Count queries are always integers; noise is still drawn from Laplace(0, scale).
+    m = dp.m.make_laplace(dp.atom_domain(T=int), dp.absolute_distance(T=int), scale)
+    return float(m(int(round(true_value))))
 
 
 def gaussian_mechanism(true_value, sensitivity, epsilon, delta):
@@ -142,6 +149,11 @@ def gaussian_mechanism(true_value, sensitivity, epsilon, delta):
     Gaussian Mechanism (ε,δ-DP) for a numerical query.
 
     Adds Gaussian noise with std σ = sensitivity * sqrt(2 * ln(1.25/δ)) / ε.
+
+    Note: OpenDP's make_gaussian uses zero-concentrated DP (zCDP) rather than
+    (ε,δ)-DP, so we retain the standard (ε,δ) calibration formula here and
+    draw noise directly with numpy. The resulting noise magnitude is identical;
+    only the formal privacy-accounting semantics differ.
 
     Parameters
     ----------
@@ -588,254 +600,277 @@ def epsilon_to_krr_noise_probability(epsilon, k):
 
 
 # =============================================================================
-# MAIN — SIMULATION & USAGE EXAMPLES
+# MARGIN OF ERROR AND CONFIDENCE INTERVALS FOR NUMERICAL DP MECHANISMS
 # =============================================================================
 
-def _section(title):
-    width = 68
-    print("\n" + "=" * width)
-    print(f"  {title}")
-    print("=" * width)
+def laplace_margin_of_error(sensitivity, epsilon, confidence=0.95, n=1):
+    """
+    Margin of error for a Laplace-noised count query.
+
+    The noisy value produced by `laplace_mechanism` is an unbiased estimate
+    of the true count.  The true value falls within ±margin of the noisy
+    value with the given confidence level:
+
+        true_value ∈ (noisy_value − margin, noisy_value + margin)
+        with probability = confidence.
+
+    For a single measurement (n=1) the exact Laplace quantile is used via
+    opendp.accuracy.laplacian_scale_to_accuracy.  Averaging n independent
+    noisy counts shrinks the margin by √n; for n>1 the CLT approximation is
+    applied via opendp.accuracy.gaussian_scale_to_accuracy.
+
+        b = sensitivity / epsilon          (Laplace scale)
+
+        n=1  →  margin = b · ln(1/α)          [exact, α = 1 − confidence]
+        n>1  →  margin = z_(α/2) · b · √(2/n) [CLT]
+
+    Parameters
+    ----------
+    sensitivity : float
+        Global sensitivity (Δf). For a count query, use 1.
+    epsilon : float
+        Privacy budget ε > 0.
+    confidence : float
+        Confidence level (default 0.95 for a 95% margin).
+    n : int
+        Number of independent noisy measurements averaged (default 1).
+
+    Returns
+    -------
+    float
+        Margin of error m.  The true value lies in
+        (noisy_value − m, noisy_value + m) with probability `confidence`.
+    """
+    if epsilon <= 0:
+        raise ValueError("epsilon must be positive.")
+    if sensitivity <= 0:
+        raise ValueError("sensitivity must be positive.")
+    if not (0.0 < confidence < 1.0):
+        raise ValueError("confidence must be in (0, 1).")
+    if n < 1:
+        raise ValueError("n must be at least 1.")
+
+    b = sensitivity / epsilon
+    alpha = 1.0 - confidence
+    if n == 1:
+        return float(laplacian_scale_to_accuracy(scale=b, alpha=alpha))
+    return float(gaussian_scale_to_accuracy(scale=b * np.sqrt(2.0 / n), alpha=alpha))
 
 
-def _subsection(title):
-    print(f"\n  --- {title} ---")
+def laplace_confidence_interval(noisy_value, sensitivity, epsilon,
+                                 confidence=0.95, n=1):
+    """
+    Confidence interval for the true value underlying a Laplace-noised query.
 
+    Returns (noisy_value − margin, noisy_value + margin) where `margin` is
+    computed by `laplace_margin_of_error`.
+
+    Parameters
+    ----------
+    noisy_value : float
+        The DP-protected value from `laplace_mechanism`, or the arithmetic
+        mean of `n` such independent outputs.
+    sensitivity : float
+        Global sensitivity (Δf). For a count query, use 1.
+    epsilon : float
+        Privacy budget ε > 0.
+    confidence : float
+        Desired confidence level (default 0.95).
+    n : int
+        Number of independent noisy measurements averaged (default 1).
+
+    Returns
+    -------
+    tuple[float, float]
+        (lower_bound, upper_bound) confidence interval for the true value.
+    """
+    margin = laplace_margin_of_error(sensitivity, epsilon, confidence, n)
+    return (noisy_value - margin, noisy_value + margin)
+
+
+def gaussian_margin_of_error(sensitivity, epsilon, delta, confidence=0.95, n=1):
+    """
+    Margin of error for a Gaussian-noised count query.
+
+    The true value falls within ±margin of the noisy value with the given
+    confidence level.  Because the average of n Gaussians is Gaussian, this
+    is exact for any n ≥ 1 (no CLT approximation needed):
+
+        σ = sensitivity · √(2 · ln(1.25/δ)) / ε
+        margin = z_(α/2) · σ / √n
+
+    Uses opendp.accuracy.gaussian_scale_to_accuracy.
+
+    Parameters
+    ----------
+    sensitivity : float
+        Global L2-sensitivity. For a count query, use 1.
+    epsilon : float
+        Privacy budget ε ∈ (0, 1].
+    delta : float
+        Failure probability δ ∈ (0, 1). Typical value: 1e-5.
+    confidence : float
+        Confidence level (default 0.95).
+    n : int
+        Number of independent noisy measurements averaged (default 1).
+
+    Returns
+    -------
+    float
+        Margin of error m.
+    """
+    if epsilon <= 0 or epsilon > 1:
+        raise ValueError("epsilon must be in (0, 1].")
+    if delta <= 0 or delta >= 1:
+        raise ValueError("delta must be in (0, 1).")
+    if sensitivity <= 0:
+        raise ValueError("sensitivity must be positive.")
+    if not (0.0 < confidence < 1.0):
+        raise ValueError("confidence must be in (0, 1).")
+    if n < 1:
+        raise ValueError("n must be at least 1.")
+
+    sigma = sensitivity * np.sqrt(2.0 * np.log(1.25 / delta)) / epsilon
+    return float(gaussian_scale_to_accuracy(scale=sigma / np.sqrt(n),
+                                             alpha=1.0 - confidence))
+
+
+def gaussian_confidence_interval(noisy_value, sensitivity, epsilon, delta,
+                                  confidence=0.95, n=1):
+    """
+    Confidence interval for the true value underlying a Gaussian-noised query.
+
+    Returns (noisy_value − margin, noisy_value + margin) where `margin` is
+    computed by `gaussian_margin_of_error`.
+
+    Parameters
+    ----------
+    noisy_value : float
+        The DP-protected value from `gaussian_mechanism`, or the arithmetic
+        mean of `n` such independent outputs.
+    sensitivity : float
+        Global L2-sensitivity. For a count query, use 1.
+    epsilon : float
+        Privacy budget ε ∈ (0, 1].
+    delta : float
+        Failure probability δ ∈ (0, 1). Typical value: 1e-5.
+    confidence : float
+        Desired confidence level (default 0.95).
+    n : int
+        Number of independent noisy measurements averaged (default 1).
+
+    Returns
+    -------
+    tuple[float, float]
+        (lower_bound, upper_bound) confidence interval for the true value.
+    """
+    margin = gaussian_margin_of_error(sensitivity, epsilon, delta, confidence, n)
+    return (noisy_value - margin, noisy_value + margin)
+
+
+# =============================================================================
+# MAIN — USAGE EXAMPLES
+# =============================================================================
 
 def main():
-    """
-    End-to-end simulation that demonstrates every function in this module.
-
-    Simulates a small election with:
-      - 1 000 voters
-      - 4 parties  : Alpha, Beta, Gamma, Delta
-      - 5 cities   : Springfield, Shelbyville, Ogdenville, Capital City, Brockway
-      - Two ε values are compared throughout: a tight budget (ε=0.5, more
-        private) and a loose budget (ε=3.0, more accurate).
-
-    Run with:  python voting_dp.py
-    """
+    """Demonstrate each mechanism with realistic voting-analytics scenarios."""
     np.random.seed(42)
+    W = 60  # column width for section headers
 
-    N_VOTERS   = 1_000
-    ALL_PARTIES = ["Alpha", "Beta", "Gamma", "Delta"]
-    CITIES      = ["Springfield", "Shelbyville", "Ogdenville", "Capital City", "Brockway"]
-    EPS_TIGHT   = 0.5   # strong privacy, more noise
-    EPS_LOOSE   = 3.0   # weaker privacy, less noise
+    # =========================================================================
+    print("=" * W)
+    print("  1. BINARY RANDOMIZED RESPONSE  (voted / did not vote)")
+    print("=" * W)
+    # =========================================================================
+    # A party activist ticks off voters.  Each tick is noised so that no
+    # individual's real status can be determined with certainty.
+    true_voted = True
+    eps = 1.0
+    flip_p = epsilon_to_flip_probability(eps)
+    print(f"  True status : {true_voted}  |  ε={eps}  |  P(flip)={flip_p:.1%}")
+    print(f"  5 independent reports from the same person:")
+    for i in range(1, 6):
+        reported = randomized_response(true_voted, epsilon=eps)
+        tag = "correct" if reported == true_voted else "FLIPPED"
+        print(f"    Run {i}: {str(reported):<5}  ({tag})")
 
-    # ------------------------------------------------------------------
-    # Simulate ground-truth population
-    # ------------------------------------------------------------------
-    # True party preferences (Alpha is most popular)
-    true_party_probs = [0.40, 0.30, 0.20, 0.10]
-    true_parties = np.random.choice(ALL_PARTIES, size=N_VOTERS, p=true_party_probs)
-
-    # True voted status (70 % of voters actually voted)
-    true_voted = np.random.rand(N_VOTERS) < 0.70
-
-    # True potential-voter flags (80 % are flagged as potential voters)
-    true_potential = np.random.rand(N_VOTERS) < 0.80
-
-    # Assign voters to cities (roughly equal split)
-    voter_cities = np.random.choice(CITIES, size=N_VOTERS)
-
-    # Build ground-truth city totals and per-city party counts
-    true_city_counts = {c: int(np.sum(voter_cities == c)) for c in CITIES}
-
-    true_city_party_counts = {}
-    for city in CITIES:
-        mask = voter_cities == city
-        true_city_party_counts[city] = {
-            party: int(np.sum(true_parties[mask] == party))
-            for party in ALL_PARTIES
-        }
-
-    # ================================================================
-    _section("EXAMPLE 1 — protect_party_vote  (k-Randomized Response)")
-    # ================================================================
-    print("""
-  Scenario: Each voter's party choice is locally randomised before being
-  recorded.  The aggregate estimated frequencies should still track the
-  true distribution closely, especially at higher ε.
-    """)
-
-    for eps in [EPS_TIGHT, EPS_LOOSE]:
-        _subsection(f"ε = {eps}  |  k = {len(ALL_PARTIES)}  "
-                    f"|  P(report≠truth) = "
-                    f"{epsilon_to_krr_noise_probability(eps, len(ALL_PARTIES)):.1%}")
-
-        reported = protect_party_votes_batch(true_parties, ALL_PARTIES, eps)
-        estimated = estimate_krr_frequency(reported, ALL_PARTIES, eps)
-        true_freqs = {p: float(np.mean(true_parties == p)) for p in ALL_PARTIES}
-
-        print(f"  {'Party':<12} {'True %':>8} {'Reported %':>12} {'Estimated %':>13}")
-        print(f"  {'-'*47}")
-        for party in ALL_PARTIES:
-            raw_reported = float(np.mean(np.array(reported) == party))
-            print(f"  {party:<12} {true_freqs[party]:>7.1%} "
-                  f"{raw_reported:>11.1%}  {estimated[party]:>11.1%}")
-
-    print("""
-  Takeaway:
-    The raw reported % is pulled toward uniformity (1/k = 25 %) by the noise.
-    The estimator corrects for this bias, recovering the true distribution.
-    At ε=3.0 the estimate is tight; at ε=0.5 more noise remains but the
-    ranking of parties is still recoverable with enough voters.
-    """)
-
-    # ================================================================
-    _section("EXAMPLE 2 — protect_voted_status  (Binary Randomized Response)")
-    # ================================================================
-    print("""
-  Scenario: Party activists tick voters off their list after confirming they
-  voted.  The tick is noisy: the true status is flipped with probability
-  1/(1+e^ε), giving each voter plausible deniability.
-    """)
-
-    true_voted_rate = float(np.mean(true_voted))
-    print(f"  True voted rate: {true_voted_rate:.1%}\n")
-
-    for eps in [EPS_TIGHT, EPS_LOOSE]:
-        flip_p = epsilon_to_flip_probability(eps)
-        reported_voted = protect_voted_status_batch(true_voted, eps)
-        raw_reported_rate   = float(np.mean(reported_voted))
-        estimated_rate      = estimate_rr_frequency(reported_voted, eps)
-
-        print(f"  ε = {eps}  |  P(flip) = {flip_p:.1%}")
-        print(f"    Raw reported voted rate : {raw_reported_rate:.1%}")
-        print(f"    De-biased estimate      : {estimated_rate:.1%}  "
-              f"(true = {true_voted_rate:.1%})")
-        print()
-
-    print("""
-  Takeaway:
-    At ε=0.5 nearly one in three reports are flipped, making it hard for
-    the activist to know who really voted.  At ε=3.0 only ~5 % are flipped
-    yet the true rate is still recoverable from the population statistics.
-    """)
-
-    # ================================================================
-    _section("EXAMPLE 3a — protect_city_vote_counts  (Laplace Mechanism)")
-    # ================================================================
-    print("""
-  Scenario: Publishing total voter turnout per city.  Laplace noise is added
-  to each city count before release.  Under parallel composition each city's
-  dataset is disjoint, so the same ε applies to every city independently.
-    """)
-
-    print(f"  {'City':<16} {'True count':>11}", end="")
-    for eps in [EPS_TIGHT, EPS_LOOSE]:
-        print(f"  {'Noisy (ε='+str(eps)+')':>14}", end="")
+    # =========================================================================
     print()
-    print(f"  {'-'*60}")
+    print("=" * W)
+    print("  2. k-RANDOMIZED RESPONSE  (party preference)")
+    print("=" * W)
+    # =========================================================================
+    parties = ["Labour", "Conservative", "LibDem", "Green"]
+    true_party = "Labour"
+    eps = 1.5
+    wrong_p = epsilon_to_krr_noise_probability(eps, k=len(parties))
+    print(f"  True party : {true_party}  |  k={len(parties)}  |"
+          f"  ε={eps}  |  P(randomised)={wrong_p:.1%}")
+    print(f"  5 independent reports from the same voter:")
+    for i in range(1, 6):
+        reported = k_randomized_response(true_party, parties, epsilon=eps)
+        tag = "correct" if reported == true_party else "randomised"
+        print(f"    Run {i}: {reported:<14}  ({tag})")
 
-    noisy_tight = protect_city_vote_counts(true_city_counts, EPS_TIGHT)
-    noisy_loose = protect_city_vote_counts(true_city_counts, EPS_LOOSE)
+    # =========================================================================
+    print()
+    print("=" * W)
+    print("  3. LAPLACE MECHANISM  (voter count for a city)")
+    print("=" * W)
+    # =========================================================================
+    true_count = 500
+    sensitivity = 1   # adding/removing one person changes the count by 1
+    eps = 0.5
 
-    for city in CITIES:
-        true_c  = true_city_counts[city]
-        noisy_t = noisy_tight[city]
-        noisy_l = noisy_loose[city]
-        err_t   = noisy_t - true_c
-        err_l   = noisy_l - true_c
-        print(f"  {city:<16} {true_c:>11,}"
-              f"  {noisy_t:>8,} ({err_t:+d})"
-              f"  {noisy_l:>8,} ({err_l:+d})")
+    noisy = laplace_mechanism(true_count, sensitivity=sensitivity, epsilon=eps)
+    margin = laplace_margin_of_error(sensitivity=sensitivity, epsilon=eps)
+    lo, hi = laplace_confidence_interval(noisy, sensitivity=sensitivity, epsilon=eps)
 
-    print("""
-  Takeaway:
-    At ε=0.5 the Laplace scale is 1/0.5=2, so errors of ±5-10 are common.
-    At ε=3.0 the scale drops to 1/3≈0.33, producing near-exact counts most
-    of the time.  For large cities (N≈200) the relative error is small even
-    at tight budgets.
-    """)
+    print(f"  True count        : {true_count}")
+    print(f"  ε = {eps}  →  Laplace scale b = sensitivity/ε = {sensitivity/eps:.1f}")
+    print(f"  Noisy count       : {noisy:.1f}")
+    print(f"  Margin of error   : ±{margin:.1f}  (95 % confidence)")
+    print(f"  95 % CI           : ({lo:.1f},  {hi:.1f})")
+    print()
+    print("  Averaging daily counts over n days shrinks the margin by √n:")
+    print(f"  {'n':>4}   {'margin of error':>18}   {'95 % CI width':>15}")
+    print(f"  {'-'*42}")
+    for n in [1, 5, 10, 30]:
+        m_n = laplace_margin_of_error(sensitivity=sensitivity, epsilon=eps, n=n)
+        print(f"  {n:>4}   ±{m_n:>16.2f}   {2*m_n:>14.2f}")
 
-    # ================================================================
-    _section("EXAMPLE 3b — protect_city_party_counts  (Laplace Mechanism)")
-    # ================================================================
-    print("""
-  Scenario: Publishing how many votes each party got in each city.
-  The same Laplace mechanism is applied independently to every (city, party)
-  cell.  Parallel composition across cities still gives ε per city.
-    """)
+    # =========================================================================
+    print()
+    print("=" * W)
+    print("  4. GAUSSIAN MECHANISM  (voter count for a city)")
+    print("=" * W)
+    # =========================================================================
+    true_count = 500
+    sensitivity = 1
+    eps = 0.5
+    delta = 1e-5
+    sigma = sensitivity * np.sqrt(2.0 * np.log(1.25 / delta)) / eps
 
-    noisy_cpp_tight = protect_city_party_counts(true_city_party_counts, EPS_TIGHT)
-    noisy_cpp_loose = protect_city_party_counts(true_city_party_counts, EPS_LOOSE)
+    noisy_g = gaussian_mechanism(true_count, sensitivity=sensitivity,
+                                  epsilon=eps, delta=delta)
+    margin_g = gaussian_margin_of_error(sensitivity=sensitivity,
+                                         epsilon=eps, delta=delta)
+    lo_g, hi_g = gaussian_confidence_interval(noisy_g, sensitivity=sensitivity,
+                                               epsilon=eps, delta=delta)
 
-    for city in CITIES[:2]:   # show two cities to keep output readable
-        print(f"\n  City: {city}")
-        print(f"  {'Party':<10} {'True':>7} "
-              f"{'Noisy ε='+str(EPS_TIGHT):>14} "
-              f"{'Noisy ε='+str(EPS_LOOSE):>14}")
-        print(f"  {'-'*48}")
-        for party in ALL_PARTIES:
-            t  = true_city_party_counts[city][party]
-            nt = noisy_cpp_tight[city][party]
-            nl = noisy_cpp_loose[city][party]
-            print(f"  {party:<10} {t:>7}  {nt:>10} ({nt-t:+d})  {nl:>10} ({nl-t:+d})")
-
-    print("""
-  Takeaway:
-    Per-party counts within a city are smaller numbers, so relative errors
-    look larger.  High-ε budgets keep accuracy reasonable; low-ε budgets may
-    reorder parties in small cities — acceptable for public release but not
-    for real-time activist use.
-    """)
-
-    # ================================================================
-    _section("EXAMPLE 4 — protect_potential_voter_status  (Binary RR)")
-    # ================================================================
-    print("""
-  Scenario: A party activist's list of flagged potential voters is perturbed
-  before being logged.  This prevents the list from being a perfectly accurate
-  record of who the party considers a sympathiser.
-    """)
-
-    true_potential_rate = float(np.mean(true_potential))
-    print(f"  True potential-voter rate: {true_potential_rate:.1%}\n")
-
-    for eps in [EPS_TIGHT, EPS_LOOSE]:
-        flip_p = epsilon_to_flip_probability(eps)
-        reported_pot = protect_potential_voter_status_batch(true_potential, eps)
-        raw_rate  = float(np.mean(reported_pot))
-        est_rate  = estimate_rr_frequency(reported_pot, eps)
-
-        print(f"  ε = {eps}  |  P(flip) = {flip_p:.1%}")
-        print(f"    Raw reported potential rate : {raw_rate:.1%}")
-        print(f"    De-biased estimate          : {est_rate:.1%}  "
-              f"(true = {true_potential_rate:.1%})")
-        print()
-
-    print("""
-  Takeaway:
-    The mechanism injects false positives and false negatives into the
-    activist's list.  Individuals gain plausible deniability: "I was never
-    flagged as a potential voter."  The true population statistic is still
-    recoverable analytically.
-    """)
-
-    # ================================================================
-    _section("BONUS — Privacy-Utility Tradeoff Summary")
-    # ================================================================
-    print("""
-  How the flip probability for binary RR changes with ε:
-    """)
-    print(f"  {'ε':>6}  {'P(flip) binary RR':>20}  "
-          f"{'P(wrong) k=4 RR':>20}")
-    print(f"  {'-'*50}")
-    for eps in [0.1, 0.5, 1.0, 2.0, 3.0, 5.0]:
-        p_flip = epsilon_to_flip_probability(eps)
-        p_krr  = epsilon_to_krr_noise_probability(eps, k=4)
-        print(f"  {eps:>6.1f}  {p_flip:>19.1%}  {p_krr:>19.1%}")
-
-    print("""
-  Rule of thumb:
-    ε < 1   → strong privacy, high noise, estimates need large N to be useful.
-    1 ≤ ε ≤ 3 → reasonable tradeoff for most electoral analytics use cases.
-    ε > 3   → weak privacy; most responses are truthful; only use when
-              differential privacy is required by policy, not for strong
-              individual protection.
-    """)
+    print(f"  True count        : {true_count}")
+    print(f"  ε={eps}, δ={delta}  →  σ = {sigma:.2f}")
+    print(f"  Noisy count       : {noisy_g:.1f}")
+    print(f"  Margin of error   : ±{margin_g:.1f}  (95 % confidence)")
+    print(f"  95 % CI           : ({lo_g:.1f},  {hi_g:.1f})")
+    print()
+    print("  Averaging over n days (Gaussian CI shrinks exactly by √n):")
+    print(f"  {'n':>4}   {'margin of error':>18}   {'95 % CI width':>15}")
+    print(f"  {'-'*42}")
+    for n in [1, 5, 10, 30]:
+        m_n = gaussian_margin_of_error(sensitivity=sensitivity,
+                                        epsilon=eps, delta=delta, n=n)
+        print(f"  {n:>4}   ±{m_n:>16.2f}   {2*m_n:>14.2f}")
 
 
 if __name__ == "__main__":

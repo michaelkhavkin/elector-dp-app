@@ -8,8 +8,8 @@ app.py — לוח בחירות עם שמירת פרטיות  (Streamlit)
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
-from bidi import algorithm as bidialg
+import streamlit.components.v1 as components
+import plotly.graph_objects as go
 
 from voting_dp import (
     randomized_response,
@@ -17,21 +17,8 @@ from voting_dp import (
     laplace_mechanism,
     k_randomized_response,
     estimate_krr_frequency,
+    laplace_margin_of_error,
 )
-
-# =============================================================================
-# HEBREW DISPLAY HELPER FOR MATPLOTLIB
-# =============================================================================
-
-def heb(text):
-    """
-    Reorder a Hebrew string into visual (left-to-right) order for matplotlib.
-    Matplotlib renders characters sequentially LTR, so Hebrew logical-order
-    strings appear reversed without this fix.
-    Use on every Hebrew string passed to any matplotlib function.
-    """
-    return bidialg.get_display(str(text))
-
 
 # =============================================================================
 # CONFIGURATION FLAGS
@@ -444,9 +431,65 @@ def inject_styles():
         direction: rtl !important;
         width: 100%
     }
+    /* ── Info tooltip icon ──────────────────────────────────────────── */
+    [data-testid="stVerticalBlockBorderWrapper"] { overflow: visible !important; }
+    .info-tooltip {
+        position: relative;
+        display: inline-block;
+        cursor: help;
+        vertical-align: middle;
+    }
+    .info-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 15px; height: 15px;
+        background: #3b6cb7;
+        color: #ffffff;
+        border-radius: 50%;
+        font-size: 10px; font-weight: 700;
+        line-height: 1;
+        vertical-align: middle;
+        margin-right: 5px;
+        font-style: normal;
+    }
+    .tooltip-text {
+        visibility: hidden;
+        background: #1a2340;
+        color: #ffffff;
+        border-radius: 8px;
+        padding: 10px 14px;
+        position: absolute;
+        z-index: 9999;
+        bottom: 130%; right: 0;
+        width: 260px;
+        font-size: 12px; line-height: 1.6;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        direction: rtl; text-align: right;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        pointer-events: none;
+    }
+    .info-tooltip:hover .tooltip-text { visibility: visible; opacity: 1; }
     /* ══════════════════════════════════════════════════════════════════ */
     </style>
     """, unsafe_allow_html=True)
+    # Block Ctrl+C from triggering Streamlit's "Clear cache" shortcut.
+    # stopImmediatePropagation prevents Streamlit's React handlers from seeing
+    # the event; preventDefault is intentionally omitted so the browser's
+    # native copy action still works normally.
+    components.html("""
+    <script>
+    try {
+        window.parent.document.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'c'
+                    && !e.shiftKey && !e.altKey) {
+                e.stopImmediatePropagation();
+            }
+        }, true);
+    } catch(err) {}
+    </script>
+    """, height=0)
 
 
 # =============================================================================
@@ -493,59 +536,88 @@ def _static_bar(value, label):
 # DP ACCURACY BANNER
 # =============================================================================
 
-def render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported):
-    k         = len(PARTY_NAMES)
-    p_rr      = np.exp(eps_vote) / (1.0 + np.exp(eps_vote))
-    flip      = 1.0 - p_rr
-    p_krr     = np.exp(eps_party) / (np.exp(eps_party) + k - 1)
-    noise_krr = 1.0 - p_krr
-    lap_scale = 1.0 / eps_count
+def render_accuracy_banner(eps_vote, eps_count, n_reported):
+    p_rr       = np.exp(eps_vote) / (1.0 + np.exp(eps_vote))
+    flip       = 1.0 - p_rr
+    lap_margin = laplace_margin_of_error(sensitivity=1.0, epsilon=eps_count)
 
-    if n_reported > 0 and (2 * p_rr - 1) > 0:
-        q_approx  = 0.7 * p_rr + 0.3 * (1.0 - p_rr)
-        std_count = (np.sqrt(q_approx * (1.0 - q_approx) / n_reported)
-                     / (2.0 * p_rr - 1.0)) * n_reported
-    else:
-        std_count = float("nan")
+    expected_city_size = N_VOTERS / len(CITIES)
+    lap_accuracy = max(0.0, 1.0 - lap_margin / expected_city_size)
 
     if min(float(eps_vote), float(eps_count)) >= 2.0:
-        level_icon, level_txt = "🟢", "דיוק גבוה"
-    elif min(eps_vote, float(eps_count)) >= 1.0:
+        level_icon, level_txt = "🟢", "דיוק גבוה (הגנת פרטיות חלשה)"
+    elif min(float(eps_vote), float(eps_count)) >= 1.0:
         level_icon, level_txt = "🟡", "דיוק בינוני"
     else:
-        level_icon, level_txt = "🔴", "דיוק נמוך — פרטיות גבוהה"
+        level_icon, level_txt = "🔴", "דיוק נמוך (הגנת פרטיות חזקה)"
 
-    # ── Content — Native Expander implementation ──────────────────────────
     with st.expander(f"{level_icon}  הערכת דיוק הנתונים — {level_txt}", expanded=False):
-        st.markdown(
-            f"הנתונים מוגנים בעזרת מנגנון פרטיות דיפרנציאלית.  "
-            f"**תקציבי פרטיות:** ε(הצבעה) = **{eps_vote}**, "
-            f"ε(ספירות עיר) = **{eps_count}**."
-        )
-
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("**הצבעה — Binary RR**")
-            st.markdown(
-                f"- ε = **{eps_vote}**\n"
-                f"- {flip:.0%} מהדיווחים עשויים להיות הפוכים\n"
-                + (f"- שגיאה טיפוסית: **±{std_count:.0f} מצביעים**"
-                   if not np.isnan(std_count) else "")
-            )
-            _static_bar(p_rr, f"אמינות: {p_rr:.0%}")
+            with st.container(border=True):
+                st.markdown(
+                    "📊 **סטטוס הצבעה** "
+                    "<span class='info-tooltip'><span class='info-icon'>i</span>"
+                    "<span class='tooltip-text'>"
+                    "Binary Randomized Response (LDP) — מנגנון פרטיות מקומית. "
+                    "כל דיווח מוצפן לפני שמירה: בהסתברות p הדיווח זהה לאמת, "
+                    "בהסתברות 1-p הוא מתהפך אקראית כדי להגן על פרטיות המשתמש."
+                    "</span></span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(f"**תקציב פרטיות: ε = {eps_vote}**")
+                st.divider()
+                n_correct = int(round(n_reported * p_rr))
+                n_flipped = n_reported - n_correct
+                if n_reported > 0:
+                    st.markdown(
+                        f"- ✅ **דיווחים נכונים:** {p_rr:.1%} "
+                        f"({n_correct} מתוך {n_reported} מצביעים מדווחים)\n"
+                        f"- 🔀 **הפוכים עקב הגנת פרטיות:** {flip:.1%} "
+                        f"({n_flipped} מתוך {n_reported} מצביעים מדווחים)\n"
+                        f"- **דיוק כולל: {p_rr:.0%}**"
+                    )
+                else:
+                    st.markdown(
+                        f"- ✅ **שיעור דיווחים נכונים:** {p_rr:.1%}\n"
+                        f"- 🔀 **שיעור הפוכים עקב הגנת פרטיות:** {flip:.1%}\n"
+                        f"- **דיוק כולל: {p_rr:.0%}**"
+                    )
+                _static_bar(p_rr, f"דיוק: {p_rr:.0%}")
 
         with col2:
-            st.markdown("**ספירות עיר — Laplace**")
-            st.markdown(
-                f"- ε = **{eps_count}**\n"
-                f"- רעש ממוצע: **±{lap_scale:.1f} קולות** לכל עיר\n"
-            )
-            _static_bar(1.0 / (1.0 + lap_scale), f"דיוק: {1/(1+lap_scale):.0%}")
+            with st.container(border=True):
+                st.markdown(
+                    "🏙️ **ספירות עיר** "
+                    "<span class='info-tooltip'><span class='info-icon'>i</span>"
+                    "<span class='tooltip-text'>"
+                    "מנגנון Laplace (DP) — מנגנון פרטיות גלובלית. "
+                    "רעש אקראי המחולק לפי Laplace מתווסף לכל ספירה, "
+                    "כך שלא ניתן לזהות את תרומתו של אדם בודד לתוצאה."
+                    "</span></span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(f"**תקציב פרטיות: ε = {eps_count}**")
+                st.divider()
+                example = int(round(expected_city_size))
+                lo_ex   = max(0, round(example - lap_margin))
+                hi_ex   = round(example + lap_margin)
+                st.markdown(
+                    f"- 📏 **שגיאת דגימה:** ±{lap_margin:.0f} מצביעים (רווח סמך 95%)\n"
+                    f"- 📊 **דוגמה:** עבור ספירה מדווחת של {example} מצביעים — "
+                    f"הערך האמיתי נע בין {lo_ex} ל-{hi_ex} בסבירות 95%\n"
+                    f"- **דיוק כולל: {lap_accuracy:.0%}**"
+                )
+                _static_bar(lap_accuracy, f"דיוק: {lap_accuracy:.0%}")
 
-        st.caption(
+        st.markdown(
+            "<div style='direction:rtl;text-align:right;margin-top:16px;padding:12px;"
+            "background:#fffbe6;border-radius:8px;border:1px solid #ffe58f;'>"
+            "<strong style='font-size:16px;'>"
             "💡 ε גבוה יותר = דיוק גבוה יותר, פרטיות נמוכה יותר.  "
-            "ε נמוך יותר = פרטיות גבוהה יותר, שגיאה גדולה יותר."
+            "ε נמוך יותר = פרטיות גבוהה יותר, שגיאה גדולה יותר.</strong></div>",
+            unsafe_allow_html=True,
         )
 
 # =============================================================================
@@ -588,13 +660,6 @@ def render_sidebar():
                                    0.1, 5.0, DEFAULT_EPS_VOTE,  step=0.1)
             eps_count = st.slider("ε — ספירות עיר (Laplace)",
                                    0.1, 5.0, DEFAULT_EPS_COUNT, step=0.1)
-            flip_pct = 1.0 / (1.0 + np.exp(eps_vote))
-            krr_pct  = (len(PARTY_NAMES) - 1) / (
-                np.exp(eps_party) + len(PARTY_NAMES) - 1)
-            st.caption(
-                f"סיכוי היפוך (הצבעה): **{flip_pct:.1%}**  \n"
-                f"רעש k-RR (מפלגה): **{krr_pct:.1%}**"
-            )
             st.divider()
 
         st.markdown("#### ⚙️ סימולציה")
@@ -741,73 +806,105 @@ def compute_overall_turnout_estimate(eps_vote):
 # =============================================================================
 
 def plot_city_bars(city_df):
-    """תרשים עמודות אופקי: הצביעו (DP) לעומת ממתינים לפי עיר."""
-    fig, ax = plt.subplots(figsize=(7, 3.5))
-    cities  = [heb(c) for c in city_df["עיר"].tolist()]
+    """תרשים עמודות אופקי אינטראקטיבי: הצביעו (DP) לעומת ממתינים לפי עיר."""
+    cities  = city_df["עיר"].tolist()
     voted   = city_df["הצביעו (DP)"].tolist()
     pending = city_df["עדיין ממתינים"].tolist()
-    y       = list(range(len(cities)))
-    ax.barh(y, voted,   color=STATUS_VOTED,   alpha=0.85, label=heb("הצביעו (DP)"))
-    ax.barh(y, pending, left=voted, color=STATUS_PENDING, alpha=0.60,
-            label=heb("עדיין ממתינים"))
-    ax.set_yticks(y)
-    ax.set_yticklabels(cities, fontsize=10)
-    ax.set_xlabel(heb("מצביעים"), fontsize=10)
-    ax.set_title(heb("נוכחות לפי עיר (מוגן DP)"), fontsize=11, fontweight="bold")
-    ax.legend(fontsize=9, loc="lower right")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=cities, x=voted, orientation='h',
+        name="הצביעו (משמר-פרטיות)", marker_color=STATUS_VOTED, opacity=0.85,
+    ))
+    fig.add_trace(go.Bar(
+        y=cities, x=pending, orientation='h',
+        name="מצביעים פוטנציאליים ממתינים", marker_color=STATUS_PENDING, opacity=0.60,
+    ))
+    fig.update_layout(
+        barmode='stack',
+        title=dict(text="נוכחות לפי עיר (משמר-פרטיות)", font=dict(size=13, color='#1a2340')),
+        xaxis_title="מצביעים",
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+                    font=dict(color='#1a2340')),
+        height=320, margin=dict(l=10, r=10, t=55, b=10),
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Heebo, sans-serif', color='#1a2340'),
+        modebar=dict(bgcolor='rgba(240,244,248,0.9)', color='#1a2340', activecolor='#3b6cb7'),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor='#e0e4ec', zeroline=False,
+                     tickfont=dict(color='#1a2340'), title_font=dict(color='#1a2340'),
+                     linecolor='#c0ccde', tickcolor='#c0ccde')
+    fig.update_yaxes(showgrid=False,
+                     tickfont=dict(color='#1a2340'), linecolor='#c0ccde')
     return fig
 
 
 def plot_missing_voters(city_df):
-    """
-    תרשים עמודות: מצביעים שעדיין לא גויסו לפי עיר.
-    ממוין מהגבוה לנמוך כדי לתעדף ערים עם הכי הרבה ממתינים.
-    """
+    """תרשים עמודות אופקי אינטראקטיבי: מצביעים שטרם גויסו לפי עיר."""
     sorted_df = city_df.sort_values("עדיין ממתינים", ascending=True)
-    cities    = [heb(c) for c in sorted_df["עיר"].tolist()]
-    missing   = sorted_df["עדיין ממתינים"].tolist()
-    total     = sorted_df["מגויסים"].tolist()
-    y         = list(range(len(cities)))
+    cities  = sorted_df["עיר"].tolist()
+    missing = sorted_df["עדיין ממתינים"].tolist()
+    total   = sorted_df["מגויסים"].tolist()
 
-    fig, ax = plt.subplots(figsize=(7, 3.5))
-    ax.barh(y, total,   color="#d0ddf0", alpha=0.70, label=heb("סה\"כ מגויסים"))
-    ax.barh(y, missing, color=STATUS_MISSING, alpha=0.85, label=heb("לא גויסו עדיין"))
-    ax.set_yticks(y)
-    ax.set_yticklabels(cities, fontsize=10)
-    ax.set_xlabel(heb("מצביעים"), fontsize=10)
-    ax.set_title(heb("מצביעים שטרם גויסו — לפי עיר"), fontsize=11, fontweight="bold")
-    ax.legend(fontsize=9, loc="lower right")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=cities, x=total, orientation='h',
+        name='סה"כ מגויסים', marker_color='#d0ddf0', opacity=0.70,
+    ))
+    fig.add_trace(go.Bar(
+        y=cities, x=missing, orientation='h',
+        name="לא גויסו עדיין", marker_color=STATUS_MISSING, opacity=0.85,
+    ))
+    fig.update_layout(
+        barmode='overlay',
+        title=dict(text="מצביעים שטרם גויסו — לפי עיר", font=dict(size=13, color='#1a2340')),
+        xaxis_title="מצביעים",
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+                    font=dict(color='#1a2340')),
+        height=320, margin=dict(l=10, r=10, t=55, b=10),
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Heebo, sans-serif', color='#1a2340'),
+        modebar=dict(bgcolor='rgba(240,244,248,0.9)', color='#1a2340', activecolor='#3b6cb7'),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor='#e0e4ec', zeroline=False,
+                     tickfont=dict(color='#1a2340'), title_font=dict(color='#1a2340'),
+                     linecolor='#c0ccde', tickcolor='#c0ccde')
+    fig.update_yaxes(showgrid=False,
+                     tickfont=dict(color='#1a2340'), linecolor='#c0ccde')
     return fig
 
 
 def plot_party_estimates(party_counts):
-    """תרשים עמודות: הערכת הצבעות לפי מפלגה (k-RR)."""
+    """תרשים עמודות אינטראקטיבי: הערכת הצבעות לפי מפלגה (k-RR)."""
     parties = list(party_counts.keys())
     counts  = [party_counts[p] for p in parties]
     colors  = [PARTY_COLORS.get(p, "#888") for p in parties]
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    bars = ax.bar(
-        [heb(p) for p in parties],
-        counts, color=colors, alpha=0.88, edgecolor="white", linewidth=0.8,
-    )
-    ax.bar_label(bars, padding=3, fontsize=9)
     org_idx = parties.index(ORGANISER)
-    bars[org_idx].set_edgecolor("gold")
-    bars[org_idx].set_linewidth(2.5)
-    ax.set_ylabel(heb("מצביעים משוערים"), fontsize=10)
-    ax.set_title(
-        heb(f"הערכת DP — הצבעות לפי מפלגה\n(מסגרת זהב = {ORGANISER})"),
-        fontsize=10, fontweight="bold",
+
+    fig = go.Figure(go.Bar(
+        x=parties, y=counts,
+        marker_color=colors,
+        marker_line_color=['gold' if i == org_idx else 'black' for i in range(len(parties))],
+        marker_line_width=[2.5 if i == org_idx else 0.8 for i in range(len(parties))],
+        text=counts, textposition='outside',
+    ))
+    fig.update_layout(
+        title=dict(
+            text=f"הערכת DP — הצבעות לפי מפלגה (מסגרת זהב = {ORGANISER})",
+            font=dict(size=13, color='#1a2340'),
+        ),
+        yaxis_title="מצביעים משוערים",
+        height=320, margin=dict(l=10, r=10, t=55, b=10),
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Heebo, sans-serif', color='#1a2340'),
+        showlegend=False,
+        modebar=dict(bgcolor='rgba(240,244,248,0.9)', color='#1a2340', activecolor='#3b6cb7'),
     )
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
+    fig.update_yaxes(showgrid=True, gridcolor='#e0e4ec', zeroline=False,
+                     tickfont=dict(color='#1a2340'), title_font=dict(color='#1a2340'),
+                     linecolor='#c0ccde', tickcolor='#c0ccde')
+    fig.update_xaxes(showgrid=False,
+                     tickfont=dict(color='#1a2340'), linecolor='#c0ccde')
     return fig
 
 
@@ -825,21 +922,21 @@ def page_dashboard(eps_vote, eps_party, eps_count):
     est_rate, est_count, _ = compute_overall_turnout_estimate(eps_vote)
 
     # ── Accuracy banner (shows impact of current ε selection) ──────────
-    render_accuracy_banner(eps_vote, eps_party, eps_count, n_reported)
+    render_accuracy_banner(eps_vote, eps_count, n_reported)
 
     st.divider()
 
     # ── Top metric cards ────────────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("מצביעים שגויסו",  f"{n_total:,}")
-    c2.metric("דוחות שהוגשו",    f"{n_reported:,}",
+    n_pending = n_total - n_reported
+    c1, c2, c3 = st.columns(3)
+    c1.metric("מצביעים פוטנציאליים שהומרצו", f"{n_reported:,}",
               delta=f"{n_reported/n_total:.0%} מהרשימה")
-    c3.metric("הערכת נוכחות (משמרת DP)",
+    c2.metric("הצביעו (משמרת-פרטיות)",
               f"{est_count:,}" if n_reported > 0 else "—",
               delta=f"~{est_rate:.0%} מהמדווחים" if n_reported > 0 else None)
-    c4.metric("עדיין ממתינים",
-              f"{n_total - n_reported:,}",
-              delta=f"−{n_reported}" if n_reported else None,
+    c3.metric("מצביעים פוטנציאליים ממתינים",
+              f"{n_pending:,}",
+              delta=f"נותרו עוד {n_pending} מצביעים להמריץ" if n_pending > 0 else "כולם המרצו ✓",
               delta_color="inverse")
 
     if n_reported == 0:
@@ -855,9 +952,9 @@ def page_dashboard(eps_vote, eps_party, eps_count):
     st.markdown("#### נוכחות ומצביעים ממתינים לפי עיר")
     col_a, col_b = st.columns(2)
     with col_a:
-        st.pyplot(plot_city_bars(city_df), use_container_width=False)
+        st.plotly_chart(plot_city_bars(city_df), use_container_width=True)
     with col_b:
-        st.pyplot(plot_missing_voters(city_df), use_container_width=False)
+        st.plotly_chart(plot_missing_voters(city_df), use_container_width=True)
 
     st.divider()
 
@@ -883,7 +980,7 @@ def page_voter_list(eps_vote, eps_party):
     with col_f2:
         status_filter = st.selectbox(
             "סנן לפי סטטוס דוח",
-            ["הכל", "טרם דווח", "דווח — הצביע", "דווח — לא הצביע"],
+            ["הכל", "טרם דווח", "דווח — הצביע"],
         )
     with col_f3:
         search = st.text_input("חפש שם", "")
@@ -896,9 +993,7 @@ def page_voter_list(eps_vote, eps_party):
     if status_filter == "טרם דווח":
         filtered = filtered[~filtered.voter_id.isin(rv)]
     elif status_filter == "דווח — הצביע":
-        filtered = filtered[filtered.voter_id.map(lambda x: rv.get(x) is True)]
-    elif status_filter == "דווח — לא הצביע":
-        filtered = filtered[filtered.voter_id.map(lambda x: rv.get(x) is False)]
+        filtered = filtered[filtered.voter_id.isin(rv)]
 
     st.markdown(f"**מוצגים {len(filtered)} מצביעים**")
     st.divider()
@@ -914,19 +1009,15 @@ def page_voter_list(eps_vote, eps_party):
 
             # Rightmost column: voter name and city
             with col_name:
-                icon = ("✅" if rv.get(vid) is True
-                        else "❌" if rv.get(vid) is False
-                        else "⏳")
+                icon = "✅" if vid in rv else "⏳"
                 st.markdown(f"**{icon}  {row['name']}**")
                 st.caption(f"📍 {row['city']}")
 
             # Middle column: report status
             with col_status:
                 if already:
-                    label = "דווח: הצביע ✓" if rv[vid] else "דווח: לא הצביע ✗"
-                    color = "green" if rv[vid] else "grey"
                     st.markdown(
-                        f"<span style='color:{color}'>{label}</span>",
+                        "<span style='color:green'>דווח: הצביע ✓</span>",
                         unsafe_allow_html=True,
                     )
                     st.caption("(דוח מוגן DP נשמר)")
@@ -936,19 +1027,11 @@ def page_voter_list(eps_vote, eps_party):
             # Leftmost column: action buttons
             with col_btns:
                 if not already:
-                    b1, b2 = st.columns(2)
-                    with b1:
-                        if st.button("✅ הצביע", key=f"v_yes_{vid}",
-                                     width='content'):
-                            record_voter_report(vid, True, row["true_party"],
-                                                eps_vote, eps_party)
-                            st.rerun()
-                    with b2:
-                        if st.button("❌ עדיין לא", key=f"v_no_{vid}",
-                                     width='content'):
-                            record_voter_report(vid, False, row["true_party"],
-                                                eps_vote, eps_party)
-                            st.rerun()
+                    if st.button("✅ הצביע", key=f"v_yes_{vid}",
+                                 use_container_width=False):
+                        record_voter_report(vid, True, row["true_party"],
+                                            eps_vote, eps_party)
+                        st.rerun()
                 else:
                     if st.button("↩ בטל", key=f"v_undo_{vid}",
                                  width='content'):
