@@ -462,8 +462,8 @@ def inject_styles():
         position: absolute;
         z-index: 9999;
         bottom: 130%; right: 0;
-        width: 260px;
-        font-size: 12px; line-height: 1.6;
+        width: 300px;
+        font-size: 14px; line-height: 1.6;
         opacity: 0;
         transition: opacity 0.2s ease;
         direction: rtl; text-align: right;
@@ -612,7 +612,7 @@ def render_accuracy_banner(eps_vote, eps_count, n_reported):
                 _static_bar(lap_accuracy, f"דיוק: {lap_accuracy:.0%}")
 
         st.markdown(
-            "<div style='direction:rtl;text-align:right;margin-top:16px;padding:12px;"
+            "<div style='direction:rtl;text-align:right;margin-top:8px;margin-bottom:8px;padding:8px;"
             "background:#fffbe6;border-radius:8px;border:1px solid #ffe58f;'>"
             "<strong style='font-size:16px;'>"
             "💡 ε גבוה יותר = דיוק גבוה יותר, פרטיות נמוכה יותר.  "
