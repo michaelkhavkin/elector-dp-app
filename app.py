@@ -462,7 +462,7 @@ def inject_styles():
         position: absolute;
         z-index: 9999;
         bottom: 130%; right: 0;
-        width: 300px;
+        width: 310px;
         font-size: 14px; line-height: 1.6;
         opacity: 0;
         transition: opacity 0.2s ease;
