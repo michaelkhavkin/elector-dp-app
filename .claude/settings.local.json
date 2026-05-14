@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.opendp.org)",
+      "WebFetch(domain:pypi.org)",
+      "WebSearch",
+      "Bash(conda run *)",
+      "Bash(del \"c:\\\\Users\\\\user\\\\My Drive\\\\PhD\\\\Projects\\\\Elector\\\\elector-dp-app\\\\_test_dp.py\")",
+      "Bash(python -c \"import plotly; print\\(plotly.__version__\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"from voting_dp import laplace_margin_of_error; print\\(laplace_margin_of_error\\(1.0, 1.0\\)\\)\")",
+      "Bash(where streamlit *)",
+      "Bash(streamlit --version)",
+      "Bash(python -m streamlit --version)",
+      "Bash(py -m streamlit --version)",
+      "PowerShell(conda run -n elector_dp python -c \"import plotly; print\\(plotly.__version__\\)\" 2>&1)",
+      "Bash(sleep 8 && cat \"/c/Users/user/AppData/Local/Temp/claude/c--Users-user-My-Drive-PhD-Projects-Elector-elector-dp-app/b6e7cb02-ff6f-405b-b407-21811e687254/tasks/by7n93kp0.output\")",
+      "Read(//c/Users/user/AppData/Local/Temp/claude/c--Users-user-My-Drive-PhD-Projects-Elector-elector-dp-app/b6e7cb02-ff6f-405b-b407-21811e687254/tasks/**)",
+      "PowerShell(& \"C:\\\\Users\\\\user\\\\.conda\\\\envs\\\\elector_dp\\\\python.exe\" \"c:\\\\Users\\\\user\\\\My Drive\\\\PhD\\\\Projects\\\\Elector\\\\elector-dp-app\\\\_test_imports.py\" 2>&1)"
+    ]
+  }
+}
