@@ -17,6 +17,8 @@ Generic layer:
   - estimate_rr_frequency      : Unbiased frequency estimator for binary RR outputs
   - laplace_margin_of_error      : 95 % margin of error for a Laplace-noised count
   - laplace_confidence_interval  : 95 % CI for a Laplace-noised count (noisy_value ± margin)
+  - rr_margin_of_error           : 95 % margin of error for a de-biased binary-RR count
+  - rr_confidence_interval       : 95 % CI for a de-biased binary-RR count (count ± margin)
   - gaussian_margin_of_error     : 95 % margin of error for a Gaussian-noised count
   - gaussian_confidence_interval : 95 % CI for a Gaussian-noised count (noisy_value ± margin)
 
@@ -31,6 +33,8 @@ Usage example (Jupyter)
 -----------------------
     from voting_dp import protect_party_vote, protect_voted_status, ...
 """
+
+from statistics import NormalDist
 
 import numpy as np
 import opendp.prelude as dp
@@ -686,6 +690,87 @@ def laplace_confidence_interval(noisy_value, sensitivity, epsilon,
     """
     margin = laplace_margin_of_error(sensitivity, epsilon, confidence, n)
     return (noisy_value - margin, noisy_value + margin)
+
+
+def rr_margin_of_error(n, epsilon, confidence=0.95, reported_rate=None):
+    """
+    Margin of error for a count recovered from n binary-RR reports.
+
+    City / turnout counts in the DP Elector are *sums of the already-perturbed
+    RR reports*, de-biased by `estimate_rr_frequency`.  No Laplace noise is
+    added: summing the stored reports is post-processing of the same ε spent at
+    capture, so it costs no extra privacy budget — and a second mechanism would
+    only be redundant double-noising of LDP data.  The only error is therefore
+    the sampling variance of RR itself, and it shrinks as n grows.
+
+    The de-biased proportion estimator f̂ has variance
+
+        Var(f̂) = q(1 − q) / (n · (2p − 1)²),      p = e^ε / (1 + e^ε)
+
+    where q = f·p + (1−f)(1−p) is the probability a single stored report reads
+    True.  The margin on the *count* (= f̂ · n) at the given confidence is
+
+        margin = z · √(n · q(1 − q)) / (2p − 1).
+
+    With `reported_rate` (an estimate of q) unknown, the worst case q = ½ is
+    used, giving the widest (most conservative) interval.
+
+    Parameters
+    ----------
+    n : int
+        Number of RR reports aggregated into the count.
+    epsilon : float
+        The ε used at capture (ε > 0).
+    confidence : float
+        Confidence level (default 0.95 for a 95 % margin).
+    reported_rate : float | None
+        Observed share of reports reading True (q).  If None, uses ½.
+
+    Returns
+    -------
+    float
+        Margin of error on the recovered count.
+    """
+    if epsilon <= 0:
+        raise ValueError("epsilon must be positive.")
+    if n < 1:
+        raise ValueError("n must be at least 1.")
+    if not (0.0 < confidence < 1.0):
+        raise ValueError("confidence must be in (0, 1).")
+
+    p = np.exp(epsilon) / (1.0 + np.exp(epsilon))
+    q = 0.5 if reported_rate is None else float(np.clip(reported_rate, 0.0, 1.0))
+    z = NormalDist().inv_cdf(1.0 - (1.0 - confidence) / 2.0)
+    return float(z * np.sqrt(n * q * (1.0 - q)) / (2.0 * p - 1.0))
+
+
+def rr_confidence_interval(count, n, epsilon, confidence=0.95, reported_rate=None):
+    """
+    Confidence interval for the true count underlying a de-biased binary-RR count.
+
+    Returns (count − margin, count + margin) where `margin` is computed by
+    `rr_margin_of_error`.
+
+    Parameters
+    ----------
+    count : float
+        The de-biased count from `estimate_rr_frequency(...) * n`.
+    n : int
+        Number of RR reports aggregated into the count.
+    epsilon : float
+        The ε used at capture (ε > 0).
+    confidence : float
+        Desired confidence level (default 0.95).
+    reported_rate : float | None
+        Observed share of reports reading True (q).  If None, uses ½.
+
+    Returns
+    -------
+    tuple[float, float]
+        (lower_bound, upper_bound) confidence interval for the true count.
+    """
+    margin = rr_margin_of_error(n, epsilon, confidence, reported_rate)
+    return (count - margin, count + margin)
 
 
 def gaussian_margin_of_error(sensitivity, epsilon, delta, confidence=0.95, n=1):
