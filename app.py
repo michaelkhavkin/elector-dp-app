@@ -15,6 +15,7 @@ import streamlit.components.v1 as components
 import plotly.graph_objects as go
 
 import population
+import geo
 from voting_dp import (
     randomized_response,
     estimate_rr_frequency,
@@ -119,6 +120,30 @@ DASH_NO_REPORTS_INFO  = (
     "או לחץ **הרץ סימולציה** למעלה."
 )
 DASH_CITY_CHART_HEADER = "#### נוכחות ומצביעים ממתינים לפי עיר"
+
+# ── Map (geographic view under the per-city panel) ──────────────────────────
+MAP_HEADER          = "#### מפת נוכחות ארצית (משמר-פרטיות)"
+MAP_VIEW_LABEL      = "תצוגת מפה"
+MAP_VIEW_AGG        = "מפת צבירה (הערכות DP)"
+MAP_VIEW_DOTS       = "מפת רשומות מוגנות (נקודות)"
+MAP_METRIC_LABEL    = "מדד לתצוגה"
+MAP_METRIC_TURNOUT  = "אחוז הצבעה משוער"
+MAP_METRIC_PENDING  = "מצביעים פוטנציאליים ממתינים"
+MAP_METRIC_VOTED    = "הצביעו (משוער)"
+MAP_DOT_VOTED       = "דווח: הצביע"
+MAP_DOT_NOTVOTED    = "דווח: טרם הצביע"
+MAP_AGG_TITLE       = ""
+MAP_DOTS_TITLE      = (
+    "כל נקודה היא רשומה **מורעשת** אחת — הערך ששמור בפועל (ומה שהיה דולף). "
+    "ברמת הפרט הרשומה אינה אמינה (הכחשה סבירה); ברמת הצבירה ההערכה מדויקת."
+)
+MAP_MISSING_COORDS  = "⚠️ ל־{n} יישובים אין קואורדינטות והם אינם מוצגים על המפה (הם עדיין מופיעים בטבלה ובתרשים)."
+MAP_NO_COORDS_FILE  = (
+    "מפה אינה זמינה: קובץ הקואורדינטות `settlement_coords.csv` חסר. "
+    "הרץ `python experiments/prepare_geo.py` כדי לייצר אותו."
+)
+MAP_DOTS_CAP        = 5000   # max individual dots rendered (random sample beyond this)
+MAP_DOTS_CAPPED_MSG = "מוצגת דגימה אקראית של {shown:,} מתוך {total:,} רשומות מורעשות."
 
 # ── Voter-list page ─────────────────────────────────────────────────────────
 VOTERS_PAGE_TITLE = "📋 פנקס הבוחרים"
@@ -1103,6 +1128,152 @@ def plot_city_bars(city_df):
     return fig
 
 
+def _map_layout(fig):
+    """Shared MapLibre layout: Israel-framed, token-free tiles, light theme."""
+    fig.update_layout(
+        map=dict(style="carto-positron",
+                 center=dict(lat=geo.ISRAEL_CENTER[0], lon=geo.ISRAEL_CENTER[1]),
+                 zoom=geo.ISRAEL_ZOOM),
+        height=460, margin=dict(l=0, r=0, t=10, b=0),
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Heebo, sans-serif', color='#1a2340'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.01, xanchor='right', x=1,
+                    bgcolor='rgba(255,255,255,0.7)', font=dict(color='#1a2340')),
+        modebar=dict(bgcolor='rgba(240,244,248,0.9)', color='#1a2340', activecolor='#3b6cb7'),
+    )
+    return fig
+
+
+def plot_settlement_bubble_map(city_df, metric):
+    """
+    One bubble per settlement at its centroid; colour = a de-biased DP aggregate,
+    size ∝ settlement size. Reads only `city_df` (already de-biased by
+    compute_city_dp_counts) — post-processing of the stored RR reports, no extra
+    privacy budget. Returns (figure, n_settlements_without_coords).
+    """
+    latlon = geo.city_latlon()
+
+    lats, lons, sizes, values, texts, hover = [], [], [], [], [], []
+    n_missing = 0
+    for _, row in city_df.iterrows():
+        city = row[COL_CITY]
+        if city not in latlon:
+            n_missing += 1
+            continue
+        reports = row[COL_REPORTS]
+        if metric == MAP_METRIC_TURNOUT:
+            val = (row[COL_VOTED_DP] / reports) if reports else 0.0
+            hov = f"{val:.0%}"
+        elif metric == MAP_METRIC_PENDING:
+            val = row[COL_PENDING]
+            hov = f"{int(val):,}"
+        else:  # MAP_METRIC_VOTED
+            val = row[COL_VOTED_DP]
+            hov = f"{int(val):,}"
+        lat, lon = latlon[city]
+        lats.append(lat); lons.append(lon)
+        sizes.append(row[COL_RECRUITED])
+        values.append(val)
+        texts.append(city)
+        hover.append(hov)
+
+    colorscale = "YlOrRd" if metric == MAP_METRIC_PENDING else "YlGn"
+    n_max = max(sizes) if sizes else 1
+    marker_sizes = [8 + 34 * (s / n_max) ** 0.5 for s in sizes]
+
+    fig = go.Figure(go.Scattermap(
+        lat=lats, lon=lons, mode='markers',
+        marker=dict(
+            size=marker_sizes,
+            color=values, colorscale=colorscale, showscale=True,
+            colorbar=dict(title=dict(text=metric, font=dict(color='#1a2340')),
+                          tickfont=dict(color='#1a2340')),
+            opacity=0.85,
+        ),
+        text=texts, customdata=hover,
+        hovertemplate="<b>%{text}</b><br>" + metric + ": %{customdata}<extra></extra>",
+    ))
+    return _map_layout(fig), n_missing
+
+
+def plot_voter_dot_map():
+    """
+    One dot per REPORTED voter, jittered around its settlement centroid, coloured
+    by the STORED (RR-perturbed) status — never `true_voted`. This is exactly the
+    noised record a leak would expose: individually deniable, yet accurate in
+    aggregate. Returns (figure_or_None, note_or_None).
+    """
+    rv = st.session_state.reported_voted
+    df = st.session_state.voters
+    latlon = geo.city_latlon()
+
+    rep = df.loc[df.voter_id.isin(rv), ["voter_id", "city"]].copy()
+    rep = rep[rep.city.isin(latlon)]
+    if rep.empty:
+        return None, None
+
+    note = None
+    total = len(rep)
+    if total > MAP_DOTS_CAP:
+        rep = rep.sample(MAP_DOTS_CAP, random_state=SEED)
+        note = MAP_DOTS_CAPPED_MSG.format(shown=MAP_DOTS_CAP, total=total)
+    rep["voted"] = rep.voter_id.map(rv)
+
+    rng = np.random.default_rng(SEED)
+    lat_v, lon_v, lat_n, lon_n = [], [], [], []
+    for city, grp in rep.groupby("city", sort=False):
+        lat, lon = latlon[city]
+        la, lo = geo.jitter(lat, lon, len(grp), rng)
+        flags = grp["voted"].to_numpy()
+        lat_v.extend(la[flags]);  lon_v.extend(lo[flags])
+        lat_n.extend(la[~flags]); lon_n.extend(lo[~flags])
+
+    fig = go.Figure()
+    fig.add_trace(go.Scattermap(
+        lat=lat_n, lon=lon_n, mode='markers', name=MAP_DOT_NOTVOTED,
+        marker=dict(size=6, color=STATUS_PENDING, opacity=0.55),
+        hovertemplate=MAP_DOT_NOTVOTED + "<extra></extra>",
+    ))
+    fig.add_trace(go.Scattermap(
+        lat=lat_v, lon=lon_v, mode='markers', name=MAP_DOT_VOTED,
+        marker=dict(size=6, color=STATUS_VOTED, opacity=0.75),
+        hovertemplate=MAP_DOT_VOTED + "<extra></extra>",
+    ))
+    return _map_layout(fig), note
+
+
+def render_city_map(city_df):
+    """Geographic view under the per-city panel: aggregate bubbles or DP dots."""
+    if not geo.coords_available():
+        st.info(MAP_NO_COORDS_FILE)
+        return
+
+    st.markdown(MAP_HEADER)
+    view = st.radio(MAP_VIEW_LABEL, [MAP_VIEW_AGG, MAP_VIEW_DOTS],
+                    horizontal=True, key="map_view")
+
+    if view == MAP_VIEW_AGG:
+        metric = st.selectbox(
+            MAP_METRIC_LABEL,
+            [MAP_METRIC_TURNOUT, MAP_METRIC_PENDING, MAP_METRIC_VOTED],
+            key="map_metric",
+        )
+        fig, n_missing = plot_settlement_bubble_map(city_df, metric)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(MAP_AGG_TITLE)
+        if n_missing:
+            st.caption(MAP_MISSING_COORDS.format(n=n_missing))
+    else:
+        fig, note = plot_voter_dot_map()
+        if fig is None:
+            st.info(DASH_NO_REPORTS_INFO)
+            return
+        st.plotly_chart(fig, use_container_width=True)
+        st.markdown(MAP_DOTS_TITLE)
+        if note:
+            st.caption(note)
+
+
 def plot_party_estimates(party_counts):
     """תרשים עמודות אינטראקטיבי: הערכת הצבעות לפי מפלגה (k-RR)."""
     organiser = st.session_state.organiser
@@ -1215,10 +1386,16 @@ def page_dashboard():
 
     city_df = compute_city_dp_counts(eps)
 
-    # ── Single chart: chased (voted, DP) vs. still-pending per city ──────
+    # ── Per-city panel: bar chart and map side-by-side ──────────────────
+    #    Left: chased (voted, DP) vs. still-pending per city.
+    #    Right: geographic view (aggregate bubbles, default, or DP-record dots).
     st.divider()
-    st.markdown(DASH_CITY_CHART_HEADER)
-    st.plotly_chart(plot_city_bars(city_df), use_container_width=True)
+    col_bars, col_map = st.columns(2, gap="large")
+    with col_bars:
+        st.markdown(DASH_CITY_CHART_HEADER)
+        st.plotly_chart(plot_city_bars(city_df), use_container_width=True)
+    with col_map:
+        render_city_map(city_df)
 
     st.divider()
 
